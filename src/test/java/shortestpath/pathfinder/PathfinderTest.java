@@ -1196,6 +1196,42 @@ public class PathfinderTest
 	}
 
 	@Test
+	public void testVarrockTeleportStillUsableOnF2pWorld()
+	{
+		when(client.getWorldType()).thenReturn(EnumSet.noneOf(WorldType.class));
+		when(config.useTeleportationSpells()).thenReturn(true);
+		setupInventory(
+			new Item(ItemID.LAWRUNE, 1),
+			new Item(ItemID.AIRRUNE, 3),
+			new Item(ItemID.FIRERUNE, 1));
+		setupEquipment();
+		setupConfig(QuestState.FINISHED, 99, TeleportationItem.NONE);
+
+		assertScenarioPathLength("Varrock teleport remains available on F2P world", 2,
+			WorldPointUtil.packWorldPoint(3223, 3424, 0),
+			WorldPointUtil.packWorldPoint(3213, 3424, 0));
+	}
+
+	@Test
+	public void testCamelotTeleportBlockedOnF2pWorld()
+	{
+		when(client.getWorldType()).thenReturn(EnumSet.noneOf(WorldType.class));
+		when(config.useTeleportationSpells()).thenReturn(true);
+		setupInventory(
+			new Item(ItemID.LAWRUNE, 1),
+			new Item(ItemID.AIRRUNE, 5));
+		setupEquipment();
+		setupConfig(QuestState.FINISHED, 99, TeleportationItem.NONE);
+
+		Pathfinder pathfinder = runScenario(
+			WorldPointUtil.packWorldPoint(3222, 3218, 0),
+			WorldPointUtil.packWorldPoint(2757, 3479, 0));
+
+		assertFalse("Camelot teleport should not be used on F2P worlds",
+			usedTransportWithDisplayInfo(pathfinder, TransportType.TELEPORTATION_SPELL, "Camelot Teleport"));
+	}
+
+	@Test
 	public void testWildernessRouteWithoutTeleportsWalksOut()
 	{
 		int deepWilderness = WorldPointUtil.packWorldPoint(3340, 3828, 0);
