@@ -1,14 +1,17 @@
 package shortestpath.pathfinder;
 
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.Item;
+import net.runelite.api.ItemComposition;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.QuestState;
 import net.runelite.api.Skill;
+import net.runelite.api.WorldType;
 import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.VarPlayerID;
@@ -43,6 +46,9 @@ import shortestpath.transport.requirement.TransportItems;
 public class PathfinderTest
 {
 	private static final Map<Integer, Set<Transport>> transports = TransportLoader.loadAllFromResources();
+	private static final int[] GLORY_ITEM_IDS = {
+		1706, 1708, 1710, 1712, 11976, 11978, 10360, 10358, 10356, 10354, 11966, 11964, 19707
+	};
 	@Mock
 	Client client;
 	@Mock
@@ -60,6 +66,7 @@ public class PathfinderTest
 	{
 		when(config.calculationCutoff()).thenReturn(30);
 		when(config.currencyThreshold()).thenReturn(10000000);
+		when(client.getWorldType()).thenReturn(EnumSet.of(WorldType.MEMBERS));
 	}
 
 	@Test
@@ -1189,6 +1196,42 @@ public class PathfinderTest
 	}
 
 	@Test
+	public void testVarrockTeleportStillUsableOnF2pWorld()
+	{
+		when(client.getWorldType()).thenReturn(EnumSet.noneOf(WorldType.class));
+		when(config.useTeleportationSpells()).thenReturn(true);
+		setupInventory(
+			new Item(ItemID.LAWRUNE, 1),
+			new Item(ItemID.AIRRUNE, 3),
+			new Item(ItemID.FIRERUNE, 1));
+		setupEquipment();
+		setupConfig(QuestState.FINISHED, 99, TeleportationItem.NONE);
+
+		assertScenarioPathLength("Varrock teleport remains available on F2P world", 2,
+			WorldPointUtil.packWorldPoint(3223, 3424, 0),
+			WorldPointUtil.packWorldPoint(3213, 3424, 0));
+	}
+
+	@Test
+	public void testCamelotTeleportBlockedOnF2pWorld()
+	{
+		when(client.getWorldType()).thenReturn(EnumSet.noneOf(WorldType.class));
+		when(config.useTeleportationSpells()).thenReturn(true);
+		setupInventory(
+			new Item(ItemID.LAWRUNE, 1),
+			new Item(ItemID.AIRRUNE, 5));
+		setupEquipment();
+		setupConfig(QuestState.FINISHED, 99, TeleportationItem.NONE);
+
+		Pathfinder pathfinder = runScenario(
+			WorldPointUtil.packWorldPoint(3222, 3218, 0),
+			WorldPointUtil.packWorldPoint(2757, 3479, 0));
+
+		assertFalse("Camelot teleport should not be used on F2P worlds",
+			usedTransportWithDisplayInfo(pathfinder, TransportType.TELEPORTATION_SPELL, "Camelot Teleport"));
+	}
+
+	@Test
 	public void testWildernessRouteWithoutTeleportsWalksOut()
 	{
 		int deepWilderness = WorldPointUtil.packWorldPoint(3340, 3828, 0);
@@ -1227,6 +1270,44 @@ public class PathfinderTest
 			usedTransportWithDisplayInfo(withGlory, TransportType.TELEPORTATION_ITEM, "Amulet of glory"));
 
 		assertEquals(139, withGlory.getPath().size());
+	}
+
+	@Test
+	public void testWildernessRouteDoesNotUseGloryOnF2pWorld()
+	{
+		int deepWilderness = WorldPointUtil.packWorldPoint(3340, 3828, 0);
+		int grandExchange = WorldPointUtil.packWorldPoint(3158, 3509, 0);
+
+		when(client.getWorldType()).thenReturn(EnumSet.noneOf(WorldType.class));
+		stubMembersItemDefinitions(GLORY_ITEM_IDS);
+		when(config.useAgilityShortcuts()).thenReturn(true);
+		setupInventory(new Item(ItemID.AMULET_OF_GLORY_6, 1));
+		setupEquipment();
+		setupConfig(QuestState.FINISHED, 99, TeleportationItem.INVENTORY);
+
+		Pathfinder withGlory = runScenario(deepWilderness, grandExchange);
+
+		assertFalse("Members-only glory should be ignored in F2P worlds",
+			usedTransportWithDisplayInfo(withGlory, TransportType.TELEPORTATION_ITEM, "Amulet of glory"));
+	}
+
+	@Test
+	public void testTeleportationItemAllSettingStillBlocksGloryOnF2pWorld()
+	{
+		int deepWilderness = WorldPointUtil.packWorldPoint(3340, 3828, 0);
+		int grandExchange = WorldPointUtil.packWorldPoint(3158, 3509, 0);
+
+		when(client.getWorldType()).thenReturn(EnumSet.noneOf(WorldType.class));
+		stubMembersItemDefinitions(GLORY_ITEM_IDS);
+		when(config.useAgilityShortcuts()).thenReturn(true);
+		setupInventory();
+		setupEquipment();
+		setupConfig(QuestState.FINISHED, 99, TeleportationItem.ALL);
+
+		Pathfinder allTeleports = runScenario(deepWilderness, grandExchange);
+
+		assertFalse("F2P worlds should not assume members-only teleports under ALL mode",
+			usedTransportWithDisplayInfo(allTeleports, TransportType.TELEPORTATION_ITEM, "Amulet of glory"));
 	}
 
 	@Test
@@ -1557,6 +1638,16 @@ public class PathfinderTest
 	{
 		doReturn(equipment).when(client).getItemContainer(InventoryID.WORN);
 		doReturn(items).when(equipment).getItems();
+	}
+
+	private void stubMembersItemDefinitions(int... itemIds)
+	{
+		for (int itemId : itemIds)
+		{
+			ItemComposition definition = org.mockito.Mockito.mock(ItemComposition.class);
+			when(definition.isMembers()).thenReturn(true);
+			when(client.getItemDefinition(itemId)).thenReturn(definition);
+		}
 	}
 
 	private void testTransportLength(int expectedLength, int origin, int destination)

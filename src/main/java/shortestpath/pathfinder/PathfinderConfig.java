@@ -3,6 +3,7 @@ package shortestpath.pathfinder;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -20,6 +21,7 @@ import net.runelite.api.ItemContainer;
 import net.runelite.api.Quest;
 import net.runelite.api.QuestState;
 import net.runelite.api.Skill;
+import net.runelite.api.WorldType;
 import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.VarPlayerID;
@@ -63,6 +65,22 @@ public class PathfinderConfig
 		};
 	public static final Set<Integer> CURRENCIES = Set.of(
 		ItemID.COINS, ItemID.VILLAGE_TRADE_STICKS, ItemID.ECTOTOKEN, ItemID.WARGUILD_TOKENS);
+	private static final Set<String> F2P_TELEPORT_SPELLS = Set.of(
+		"Lumbridge Home Teleport",
+		"Varrock Teleport",
+		"Lumbridge Teleport",
+		"Falador Teleport"
+	);
+	private static final Set<Skill> MEMBERS_ONLY_SKILLS = Set.of(
+		Skill.AGILITY,
+		Skill.HERBLORE,
+		Skill.THIEVING,
+		Skill.FLETCHING,
+		Skill.SLAYER,
+		Skill.FARMING,
+		Skill.CONSTRUCTION,
+		Skill.HUNTER
+	);
 	private static final TransportItems DRAMEN_STAFF = new TransportItems(
 		new int[][]{null},
 		new int[][]{ItemVariations.DRAMEN_STAFF.getIds()},
@@ -91,6 +109,7 @@ public class PathfinderConfig
 	private final Map<Quest, QuestState> questStates = new HashMap<>();
 	private final Map<Integer, Integer> varbitValues = new HashMap<>();
 	private final Map<Integer, Integer> varPlayerValues = new HashMap<>();
+	private final Map<Integer, Boolean> itemMembershipCache = new HashMap<>();
 	@Getter
 	private final LeagueModeState leagueModeState = new LeagueModeState();
 	public ItemContainer bank = null;
@@ -125,6 +144,7 @@ public class PathfinderConfig
 	private JewelleryBoxTier pohJewelleryBoxTier;
 	private int costConsumableTeleportationItems;
 	private int currencyThreshold;
+	private boolean membersWorld = true;
 
 	public PathfinderConfig(Client client, ShortestPathConfig config)
 	{
@@ -264,6 +284,8 @@ public class PathfinderConfig
 		avoidWilderness = ShortestPathPlugin.override("avoidWilderness", config.avoidWilderness());
 		usePoh = ShortestPathPlugin.override("usePoh", config.usePoh());
 		leagueModeState.refresh(client);
+		membersWorld = isMembersWorld();
+		itemMembershipCache.clear();
 
 		// Refresh transport type enabled states
 		transportTypeConfig.refresh();
@@ -667,6 +689,11 @@ public class PathfinderConfig
 			return false;
 		}
 
+		if (!membersWorld && requiresMembersContent(transport))
+		{
+			return false;
+		}
+
 		final boolean isQuestLocked = transport.isQuestLocked();
 		TransportType type = transport.getType();
 
@@ -896,6 +923,11 @@ public class PathfinderConfig
 		boolean checkBank,
 		boolean checkRunePouch)
 	{
+		if (!membersWorld && hasMembersOnlyItemRequirement(transport.getItemRequirements()))
+		{
+			return false;
+		}
+
 		if (TransportType.TELEPORTATION_ITEM.equals(transport.getType()) ||
 			TransportType.SEASONAL_TRANSPORTS.equals(transport.getType()) ||
 			TransportType.QUETZAL_WHISTLE.equals(transport.getType()))
@@ -954,7 +986,7 @@ public class PathfinderConfig
 			{
 				for (Item item : inventory.getItems())
 				{
-					if (item.getId() >= 0 && item.getQuantity() > 0)
+					if (item.getId() >= 0 && item.getQuantity() > 0 && canUseItemInCurrentWorld(item.getId()))
 					{
 						itemsAndQuantities.put(item.getId(), item.getQuantity());
 					}
@@ -969,7 +1001,7 @@ public class PathfinderConfig
 			{
 				for (Item item : equipment.getItems())
 				{
-					if (item.getId() >= 0 && item.getQuantity() > 0)
+					if (item.getId() >= 0 && item.getQuantity() > 0 && canUseItemInCurrentWorld(item.getId()))
 					{
 						itemsAndQuantities.put(item.getId(), item.getQuantity());
 					}
@@ -986,7 +1018,7 @@ public class PathfinderConfig
 			{
 				for (Item item : bank.getItems())
 				{
-					if (item.getId() >= 0 && item.getQuantity() > 0)
+					if (item.getId() >= 0 && item.getQuantity() > 0 && canUseItemInCurrentWorld(item.getId()))
 					{
 						itemsAndQuantities.put(item.getId(), item.getQuantity());
 					}
@@ -1004,7 +1036,7 @@ public class PathfinderConfig
 					int runeEnumId = client.getVarbitValue(RUNE_POUCH_RUNE_VARBITS[i]);
 					int runeId = runeEnumId > 0 ? runePouchEnum.getIntValue(runeEnumId) : 0;
 					int runeAmount = client.getVarbitValue(RUNE_POUCH_AMOUNT_VARBITS[i]);
-					if (runeId > 0 && runeAmount > 0)
+					if (runeId > 0 && runeAmount > 0 && canUseItemInCurrentWorld(runeId))
 					{
 						itemsAndQuantities.put(runeId, runeAmount);
 					}
@@ -1022,6 +1054,10 @@ public class PathfinderConfig
 			{
 				for (int itemId : req.getItemIds())
 				{
+					if (requiredQuantity > 0 && !canUseItemInCurrentWorld(itemId))
+					{
+						continue;
+					}
 					int quantity = itemsAndQuantities.getOrDefault(itemId, 0);
 					if (requiredQuantity > 0 && quantity >= requiredQuantity || requiredQuantity == 0 && quantity == 0)
 					{
@@ -1038,6 +1074,10 @@ public class PathfinderConfig
 			{
 				for (int itemId : req.getStaffIds())
 				{
+					if (requiredQuantity > 0 && !canUseItemInCurrentWorld(itemId))
+					{
+						continue;
+					}
 					int quantity = itemsAndQuantities.getOrDefault(itemId, 0);
 					if (requiredQuantity > 0 && quantity >= 1 || requiredQuantity == 0 && quantity == 0)
 					{
@@ -1051,6 +1091,10 @@ public class PathfinderConfig
 			{
 				for (int itemId : req.getOffhandIds())
 				{
+					if (requiredQuantity > 0 && !canUseItemInCurrentWorld(itemId))
+					{
+						continue;
+					}
 					int quantity = itemsAndQuantities.getOrDefault(itemId, 0);
 					if (requiredQuantity > 0 && quantity >= 1 || requiredQuantity == 0 && quantity == 0)
 					{
@@ -1066,6 +1110,142 @@ public class PathfinderConfig
 			}
 		}
 		return true;
+	}
+
+	private boolean requiresMembersContent(Transport transport)
+	{
+		if (hasMembersOnlySkillRequirement(transport))
+		{
+			return true;
+		}
+		if (TransportType.TELEPORTATION_SPELL.equals(transport.getType()) && !isF2pTeleportSpell(transport))
+		{
+			return true;
+		}
+		return hasMembersOnlyItemRequirement(transport.getItemRequirements());
+	}
+
+	private boolean hasMembersOnlySkillRequirement(Transport transport)
+	{
+		int[] requiredLevels = transport.getSkillLevels();
+		Skill[] skills = Skill.values();
+		int maxIndex = Math.min(requiredLevels.length, skills.length);
+		for (int i = 0; i < maxIndex; i++)
+		{
+			if (requiredLevels[i] > 0 && MEMBERS_ONLY_SKILLS.contains(skills[i]))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean isF2pTeleportSpell(Transport transport)
+	{
+		String displayInfo = transport.getDisplayInfo();
+		return displayInfo != null && F2P_TELEPORT_SPELLS.contains(displayInfo);
+	}
+
+	private boolean hasMembersOnlyItemRequirement(TransportItems transportItems)
+	{
+		if (transportItems == null)
+		{
+			return false;
+		}
+		for (ItemRequirement requirement : transportItems.getRequirements())
+		{
+			if (isMembersOnlyRequirement(requirement))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean isMembersOnlyRequirement(ItemRequirement requirement)
+	{
+		if (requirement == null || requirement.getQuantity() <= 0)
+		{
+			return false;
+		}
+		boolean hasMembersOption =
+			hasMembersItemOption(requirement.getItemIds())
+				|| hasMembersItemOption(requirement.getStaffIds())
+				|| hasMembersItemOption(requirement.getOffhandIds());
+		if (!hasMembersOption)
+		{
+			return false;
+		}
+		return !hasNonMembersItemOption(requirement.getItemIds())
+			&& !hasNonMembersItemOption(requirement.getStaffIds())
+			&& !hasNonMembersItemOption(requirement.getOffhandIds());
+	}
+
+	private boolean hasMembersItemOption(int[] itemIds)
+	{
+		if (itemIds == null)
+		{
+			return false;
+		}
+		for (int itemId : itemIds)
+		{
+			if (itemId > 0 && isMembersItem(itemId))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean hasNonMembersItemOption(int[] itemIds)
+	{
+		if (itemIds == null)
+		{
+			return false;
+		}
+		for (int itemId : itemIds)
+		{
+			if (itemId > 0 && !isMembersItem(itemId))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean canUseItemInCurrentWorld(int itemId)
+	{
+		return membersWorld || !isMembersItem(itemId);
+	}
+
+	private boolean isMembersItem(int itemId)
+	{
+		if (itemId <= 0)
+		{
+			return false;
+		}
+		Boolean cached = itemMembershipCache.get(itemId);
+		if (cached != null)
+		{
+			return cached;
+		}
+		boolean members = false;
+		try
+		{
+			net.runelite.api.ItemComposition itemDefinition = client.getItemDefinition(itemId);
+			members = itemDefinition != null && itemDefinition.isMembers();
+		}
+		catch (RuntimeException ignored)
+		{
+		}
+		itemMembershipCache.put(itemId, members);
+		return members;
+	}
+
+	private boolean isMembersWorld()
+	{
+		EnumSet<WorldType> worldTypes = client.getWorldType();
+		return worldTypes == null || worldTypes.contains(WorldType.MEMBERS);
 	}
 
 	/**
