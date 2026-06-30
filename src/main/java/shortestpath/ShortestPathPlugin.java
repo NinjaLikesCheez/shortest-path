@@ -38,7 +38,6 @@ import net.runelite.api.Point;
 import net.runelite.api.ScriptID;
 import net.runelite.api.Tile;
 import net.runelite.api.coords.WorldPoint;
-import net.runelite.api.events.DecorativeObjectDespawned;
 import net.runelite.api.events.DecorativeObjectSpawned;
 import net.runelite.api.events.GameObjectDespawned;
 import net.runelite.api.events.GameObjectSpawned;
@@ -81,6 +80,7 @@ import shortestpath.pathfinder.PathStep;
 import shortestpath.pathfinder.Pathfinder;
 import shortestpath.pathfinder.PathfinderConfig;
 import shortestpath.pathfinder.TransportAvailability;
+import shortestpath.PrimitiveIntHashMap;
 import shortestpath.transport.Transport;
 import shortestpath.transport.TransportType;
 
@@ -327,13 +327,13 @@ public class ShortestPathPlugin extends Plugin
 	private void initializeValidPohPortalObjectIds()
 	{
 		validPohPortalObjectIds.clear();
-		
-		Map<Integer, Set<Transport>> transports = pathfinderConfig.getTransports();
-		for (Set<Transport> transportSet : transports.values())
+
+		PrimitiveIntHashMap<Transport[]> transports = pathfinderConfig.getTransports();
+		for (int origin : transports.keys())
 		{
-			for (Transport transport : transportSet)
+			for (Transport transport : transports.getOrDefault(origin, TransportAvailability.EMPTY_TRANSPORTS))
 			{
-				if (TransportType.TELEPORTATION_PORTAL_POH.equals(transport.getType()))
+				if (transport != null && TransportType.TELEPORTATION_PORTAL_POH.equals(transport.getType()))
 				{
 					int objectId = parseObjectIdFromObjectInfo(transport.getObjectInfo());
 					if (objectId > 0)
@@ -438,7 +438,8 @@ public class ShortestPathPlugin extends Plugin
 		pathfinderConfig = new PathfinderConfig(client, config);
 		if (GameState.LOGGED_IN.equals(client.getGameState()))
 		{
-			clientThread.invokeLater(() -> {
+			clientThread.invokeLater(() ->
+			{
 				pathfinderConfig.refresh();
 				initializeValidPohPortalObjectIds();
 				loadDetectedPohPortals();
@@ -627,7 +628,8 @@ public class ShortestPathPlugin extends Plugin
 			return;
 		}
 
-		pendingTasks.add(new PendingTask(client.getTickCount() + 1, () -> {
+		pendingTasks.add(new PendingTask(client.getTickCount() + 1, () ->
+		{
 			pathfinderConfig.refresh();
 			initializeValidPohPortalObjectIds();
 			loadDetectedPohPortals();
@@ -912,7 +914,7 @@ public class ShortestPathPlugin extends Plugin
 		}
 
 		int currentLocation = WorldPointUtil.fromLocalInstance(client, localPlayer);
-		
+
 		// Reset inOwnPoh flag if player leaves POH area
 		int playerX = WorldPointUtil.unpackWorldX(currentLocation);
 		int playerY = WorldPointUtil.unpackWorldY(currentLocation);
@@ -920,7 +922,7 @@ public class ShortestPathPlugin extends Plugin
 		{
 			inOwnPoh = false;
 		}
-		
+
 		for (int target : pathfinder.getTargets())
 		{
 			if (WorldPointUtil.distanceBetween(currentLocation, target) < config.reachedDistance())
@@ -1561,7 +1563,7 @@ public class ShortestPathPlugin extends Plugin
 			// Portal options
 			if (option.contains("Enter") || option.contains("Build mode"))
 			{
-				if (option.contains("own house") || option.contains("your house") || 
+				if (option.contains("own house") || option.contains("your house") ||
 					option.contains("Build mode") || option.contains("building mode"))
 				{
 					inOwnPoh = true;
@@ -1588,7 +1590,7 @@ public class ShortestPathPlugin extends Plugin
 			// Teleport to House spell/tablet/construction cape always goes to own house
 			if ((option.contains("Teleport") || option.contains("Tele to POH")) &&
 				(target.contains("House") || target.contains("POH") ||
-				 target.contains("Construction cape") || target.contains("Max cape")))
+				target.contains("Construction cape") || target.contains("Max cape")))
 			{
 				inOwnPoh = true;
 			}
