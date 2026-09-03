@@ -130,6 +130,7 @@ public class PathfinderConfig
 	private int currencyThreshold;
 	@Getter
 	private boolean isOnSailingBoat;
+	private Set<Integer> detectedPohPortalObjectIds = new HashSet<>();
 
 	public PathfinderConfig(Client client, ShortestPathConfig config)
 	{
@@ -720,6 +721,15 @@ public class PathfinderConfig
 			}
 		}
 
+		// Handle POH portal detection filtering
+		if (TransportType.TELEPORTATION_PORTAL_POH.equals(type))
+		{
+			if (!checkPohPortalDetected(transport))
+			{
+				return false;
+			}
+		}
+
 		if (!hasRequiredLevels(transport))
 		{
 			return false;
@@ -889,6 +899,45 @@ public class PathfinderConfig
 		}
 
 		return false;
+	}
+
+	/**
+	 * Checks if a TELEPORTATION_PORTAL_POH transport has been detected in the player's POH.
+	 * Returns true if the portal's object ID is in the detected portals set.
+	 */
+	private boolean checkPohPortalDetected(Transport transport)
+	{
+		String objectInfo = transport.getObjectInfo();
+		if (objectInfo == null || objectInfo.isEmpty())
+		{
+			return false;
+		}
+
+		// Parse the object ID from the objectInfo field
+		String[] parts = objectInfo.split("\\s+");
+		if (parts.length == 0)
+		{
+			return false;
+		}
+
+		try
+		{
+			int objectId = Integer.parseInt(parts[parts.length - 1]);
+			return detectedPohPortalObjectIds.contains(objectId);
+		}
+		catch (NumberFormatException e)
+		{
+			return false;
+		}
+	}
+
+	/**
+	 * Updates the set of detected POH portal object IDs from the plugin.
+	 * Called when the plugin detects new portals in the POH.
+	 */
+	public void setDetectedPohPortalObjectIds(Set<Integer> detectedPortals)
+	{
+		this.detectedPohPortalObjectIds = new HashSet<>(detectedPortals);
 	}
 
 	/**
