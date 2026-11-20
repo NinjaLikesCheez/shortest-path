@@ -27,6 +27,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.Getter;
 import net.runelite.api.Client;
+import net.runelite.api.DecorativeObject;
+import net.runelite.api.GameObject;
 import net.runelite.api.GameState;
 import net.runelite.api.KeyCode;
 import net.runelite.api.MenuAction;
@@ -34,12 +36,17 @@ import net.runelite.api.MenuEntry;
 import net.runelite.api.Player;
 import net.runelite.api.Point;
 import net.runelite.api.ScriptID;
+import net.runelite.api.Tile;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.events.DecorativeObjectSpawned;
+import net.runelite.api.events.GameObjectDespawned;
+import net.runelite.api.events.GameObjectSpawned;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.events.MenuOpened;
+import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.PostClientTick;
 import net.runelite.api.events.WidgetClosed;
 import net.runelite.api.events.WidgetLoaded;
@@ -73,6 +80,7 @@ import shortestpath.pathfinder.PathStep;
 import shortestpath.pathfinder.Pathfinder;
 import shortestpath.pathfinder.PathfinderConfig;
 import shortestpath.pathfinder.TransportAvailability;
+import shortestpath.PrimitiveIntHashMap;
 import shortestpath.transport.Transport;
 import shortestpath.transport.TransportType;
 
@@ -111,6 +119,9 @@ public class ShortestPathPlugin extends Plugin
 	private static final Pattern SPIRIT_TREE_LABEL_PATTERN_MENU_NEW = Pattern.compile("<col=ffffff>(.+)</col>: (<col=5f5f5f>)?(.+)");
 	private final List<PendingTask> pendingTasks = new ArrayList<>(3);
 	private final Object pathfinderMutex = new Object();
+	private final Set<Integer> detectedPohPortalObjectIds = new HashSet<>();
+	private final Set<Integer> validPohPortalObjectIds = new HashSet<>();
+	private boolean inOwnPoh = false;
 	boolean drawCollisionMap;
 	boolean drawMap;
 	boolean drawMinimap;
@@ -209,6 +220,132 @@ public class ShortestPathPlugin extends Plugin
 		return x >= POH_MIN_X && x <= POH_MAX_X && y >= POH_MIN_Y && y <= POH_MAX_Y;
 	}
 
+	/**
+	 * Parses the object ID from a transport's objectInfo field.
+	 * Format: "menuOption menuTarget objectID"
+	 * Example: "Enter Varrock Portal 33092" returns 33092
+	 */
+	private static int parseObjectIdFromObjectInfo(String objectInfo)
+	{
+		if (objectInfo == null || objectInfo.isEmpty())
+		{
+			return -1;
+		}
+
+		String[] parts = objectInfo.split("\\s+");
+		if (parts.length == 0)
+		{
+			return -1;
+		}
+
+		try
+		{
+			return Integer.parseInt(parts[parts.length - 1]);
+		}
+		catch (NumberFormatException e)
+		{
+			return -1;
+		}
+	}
+
+	/**
+	 * Loads the detected POH portal object IDs from config.
+	 * Format: "objectID1,objectID2,objectID3"
+	 */
+	private void loadDetectedPohPortals()
+	{
+		detectedPohPortalObjectIds.clear();
+		String savedPortals = config.builtTeleportationPortalsPoh();
+		if (savedPortals == null || savedPortals.isEmpty())
+		{
+			return;
+		}
+
+		String[] portalIds = savedPortals.split(",");
+		for (String portalId : portalIds)
+		{
+			try
+			{
+				int objectId = Integer.parseInt(portalId.trim());
+				if (objectId > 0)
+				{
+					detectedPohPortalObjectIds.add(objectId);
+				}
+			}
+			catch (NumberFormatException e)
+			{
+				// Ignore invalid entries
+			}
+		}
+
+		// Update PathfinderConfig with the loaded portals
+		if (pathfinderConfig != null)
+		{
+			pathfinderConfig.setDetectedPohPortalObjectIds(detectedPohPortalObjectIds);
+		}
+	}
+
+	/**
+	 * Saves the detected POH portal object IDs to config.
+	 */
+	private void saveDetectedPohPortals()
+	{
+		List<Integer> sortedIds = new ArrayList<>(detectedPohPortalObjectIds);
+		sortedIds.sort(Integer::compareTo);
+
+		StringBuilder sb = new StringBuilder();
+		for (int i = 0; i < sortedIds.size(); i++)
+		{
+			if (i > 0)
+			{
+				sb.append(",");
+			}
+			sb.append(sortedIds.get(i));
+		}
+
+		config.setBuiltTeleportationPortalsPoh(sb.toString());
+
+		// Update PathfinderConfig with the new portals
+		if (pathfinderConfig != null)
+		{
+			pathfinderConfig.setDetectedPohPortalObjectIds(detectedPohPortalObjectIds);
+		}
+	}
+
+	/**
+	 * Gets the set of detected POH portal object IDs.
+	 */
+	public Set<Integer> getDetectedPohPortalObjectIds()
+	{
+		return new HashSet<>(detectedPohPortalObjectIds);
+	}
+
+	/**
+	 * Initializes the set of valid POH portal object IDs from transport data.
+	 * This is called once during startup to build the list of object IDs to watch for.
+	 */
+	private void initializeValidPohPortalObjectIds()
+	{
+		validPohPortalObjectIds.clear();
+
+		PrimitiveIntHashMap<Transport[]> transports = pathfinderConfig.getTransports();
+		for (int origin : transports.keys())
+		{
+			for (Transport transport : transports.getOrDefault(origin, TransportAvailability.EMPTY_TRANSPORTS))
+			{
+				if (transport != null && TransportType.TELEPORTATION_PORTAL_POH.equals(transport.getType()))
+				{
+					int objectId = parseObjectIdFromObjectInfo(transport.getObjectInfo());
+					if (objectId > 0)
+					{
+						validPohPortalObjectIds.add(objectId);
+					}
+				}
+			}
+		}
+	}
+
+
 	public static boolean override(String configOverrideKey, boolean defaultValue)
 	{
 		if (!configOverride.isEmpty())
@@ -301,7 +438,12 @@ public class ShortestPathPlugin extends Plugin
 		pathfinderConfig = new PathfinderConfig(client, config);
 		if (GameState.LOGGED_IN.equals(client.getGameState()))
 		{
-			clientThread.invokeLater(pathfinderConfig::refresh);
+			clientThread.invokeLater(() ->
+			{
+				pathfinderConfig.refresh();
+				initializeValidPohPortalObjectIds();
+				loadDetectedPohPortals();
+			});
 		}
 
 		overlayManager.add(pathOverlay);
@@ -486,8 +628,120 @@ public class ShortestPathPlugin extends Plugin
 			return;
 		}
 
-		pendingTasks.add(new PendingTask(client.getTickCount() + 1, pathfinderConfig::refresh));
+		pendingTasks.add(new PendingTask(client.getTickCount() + 1, () ->
+		{
+			pathfinderConfig.refresh();
+			initializeValidPohPortalObjectIds();
+			loadDetectedPohPortals();
+		}));
 	}
+
+	@Subscribe
+	public void onGameObjectSpawned(GameObjectSpawned event)
+	{
+		if (!config.usePoh() || !config.useTeleportationPortalsPoh() || !inOwnPoh)
+		{
+			return;
+		}
+
+		GameObject gameObject = event.getGameObject();
+		if (gameObject == null)
+		{
+			return;
+		}
+
+		Tile tile = event.getTile();
+		if (tile == null)
+		{
+			return;
+		}
+
+		WorldPoint worldPoint = tile.getWorldLocation();
+		if (worldPoint == null || !isInsidePoh(worldPoint.getX(), worldPoint.getY()))
+		{
+			return;
+		}
+
+		int objectId = gameObject.getId();
+		if (validPohPortalObjectIds.contains(objectId))
+		{
+			if (detectedPohPortalObjectIds.add(objectId))
+			{
+				saveDetectedPohPortals();
+			}
+		}
+	}
+
+	@Subscribe
+	public void onDecorativeObjectSpawned(DecorativeObjectSpawned event)
+	{
+		if (!config.usePoh() || !config.useTeleportationPortalsPoh() || !inOwnPoh)
+		{
+			return;
+		}
+
+		DecorativeObject decorativeObject = event.getDecorativeObject();
+		if (decorativeObject == null)
+		{
+			return;
+		}
+
+		Tile tile = event.getTile();
+		if (tile == null)
+		{
+			return;
+		}
+
+		WorldPoint worldPoint = tile.getWorldLocation();
+		if (worldPoint == null || !isInsidePoh(worldPoint.getX(), worldPoint.getY()))
+		{
+			return;
+		}
+
+		int objectId = decorativeObject.getId();
+		if (validPohPortalObjectIds.contains(objectId))
+		{
+			if (detectedPohPortalObjectIds.add(objectId))
+			{
+				saveDetectedPohPortals();
+			}
+		}
+	}
+
+	@Subscribe
+	public void onGameObjectDespawned(GameObjectDespawned event)
+	{
+		if (!config.usePoh() || !config.useTeleportationPortalsPoh() || !inOwnPoh)
+		{
+			return;
+		}
+
+		GameObject gameObject = event.getGameObject();
+		if (gameObject == null)
+		{
+			return;
+		}
+
+		Tile tile = event.getTile();
+		if (tile == null)
+		{
+			return;
+		}
+
+		WorldPoint worldPoint = tile.getWorldLocation();
+		if (worldPoint == null || !isInsidePoh(worldPoint.getX(), worldPoint.getY()))
+		{
+			return;
+		}
+
+		int objectId = gameObject.getId();
+		if (detectedPohPortalObjectIds.contains(objectId))
+		{
+			detectedPohPortalObjectIds.remove(objectId);
+			saveDetectedPohPortals();
+		}
+	}
+
 
 	/**
 	 * Refresh the pathfinder when the player hops worlds. The new world's type
@@ -660,6 +914,15 @@ public class ShortestPathPlugin extends Plugin
 		}
 
 		int currentLocation = WorldPointUtil.fromLocalInstance(client, localPlayer);
+
+		// Reset inOwnPoh flag if player leaves POH area
+		int playerX = WorldPointUtil.unpackWorldX(currentLocation);
+		int playerY = WorldPointUtil.unpackWorldY(currentLocation);
+		if (!isInsidePoh(playerX, playerY))
+		{
+			inOwnPoh = false;
+		}
+
 		for (int target : pathfinder.getTargets())
 		{
 			if (WorldPointUtil.distanceBetween(currentLocation, target) < config.reachedDistance())
@@ -1281,9 +1544,77 @@ public class ShortestPathPlugin extends Plugin
 			.replace("__", "_");
 	}
 
+	@Subscribe
+	public void onMenuOptionClicked(MenuOptionClicked event)
+	{
+		String option = event.getMenuOption();
+		String target = event.getMenuTarget();
+
+		// Detect when player enters their own POH
+		if (option != null)
+		{
+			// Teleport to House spell/tablet/construction cape always goes to own house
+			if (option.contains("Teleport") && (target.contains("House") || target.contains("POH")))
+			{
+				inOwnPoh = true;
+				return;
+			}
+
+			// Portal options
+			if (option.contains("Enter") || option.contains("Build mode"))
+			{
+				if (option.contains("own house") || option.contains("your house") ||
+					option.contains("Build mode") || option.contains("building mode"))
+				{
+					inOwnPoh = true;
+					return;
+				}
+				// Friend's house or other player's house
+				else if (option.contains("friend") || option.contains("'s house"))
+				{
+					inOwnPoh = false;
+					return;
+				}
+			}
+		}
+	}
+
 	private void onMenuOptionClicked(MenuEntry entry)
 	{
+		String option = entry.getOption();
+		String target = entry.getTarget();
+
+		// Detect when player enters their own POH vs friend's POH
+		if (option != null && target != null)
+		{
+			// Teleport to House spell/tablet/construction cape always goes to own house
+			if ((option.contains("Teleport") || option.contains("Tele to POH")) &&
+				(target.contains("House") || target.contains("POH") ||
+				target.contains("Construction cape") || target.contains("Max cape")))
+			{
+				inOwnPoh = true;
+			}
+			// Portal/door options - check both option and target
+			else if (option.contains("Enter") || option.contains("Build mode"))
+			{
+				// Own house indicators
+				if (target.contains("own house") || target.contains("your house") ||
+					option.contains("Build mode") || option.contains("building mode") ||
+					target.toLowerCase().contains("enter your"))
+				{
+					inOwnPoh = true;
+				}
+				// Friend's house or specific player's house
+				else if (target.contains("friend") || (target.contains("'s house") && !target.contains("your")))
+				{
+					inOwnPoh = false;
+				}
+			}
+		}
+
+		// Existing menu option handling
 		if (entry.getOption().equals(SET) && entry.getTarget().equals(TARGET))
+
 		{
 			setTarget(getSelectedWorldPoint());
 		}
